@@ -8,6 +8,7 @@ import yaml
 # core 폴더의 함수들 불러오기
 from core.collector import fetch_real_naver_products, fetch_coupang_products 
 from core.processor import refine_products_batch, register_to_market
+from core.register import bulk_register_to_coupang
 
 # 1. 페이지 설정
 st.set_page_config(page_title="AutoSeller AI Pro", page_icon="☁️", layout="wide")
