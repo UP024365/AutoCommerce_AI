@@ -8,7 +8,7 @@ import yaml
 # core 폴더의 함수들 불러오기
 from core.collector import fetch_real_naver_products
 from core.processor import refine_products_batch, calculate_selling_price
-from core.register import bulk_register_to_coupang
+from core.register import bulk_register_to_coupang, get_registered_products, stop_selling_product
 
 # 1. 페이지 설정
 st.set_page_config(page_title="AutoSeller AI Pro", page_icon="☁️", layout="wide")
@@ -20,6 +20,8 @@ if 'ai_chat_count' not in st.session_state:
     st.session_state['ai_chat_count'] = 0
 if 'search_start' not in st.session_state:
     st.session_state['search_start'] = 1 
+if 'remote_prods' not in st.session_state:
+    st.session_state['remote_prods'] = []
 
 # 3. 실시간 통계 계산 함수
 def get_stats():
@@ -31,12 +33,13 @@ def get_stats():
 
 total_count, reg_count, total_margin = get_stats()
 
-# 4. 사이드바 메뉴 (상품 수동 등록 추가)
+# 4. 사이드바 메뉴 (모든 기능 통합)
 with st.sidebar:
     st.title("☁️ AutoSeller AI")
-    selected = option_menu(None, ["대시보드", "상품 수동 등록", "AI 자동 크롤링", "자동 가격 설정", "마켓 자동 등록", "API 연동 설정"], 
-                           icons=['grid-fill', 'pencil-square', 'search', 'currency-dollar', 'cloud-arrow-up', 'gear'], default_index=1)
-    st.caption(f"👤 셀러: 장종윤 (KNUT)")
+    selected = option_menu(None, 
+        ["대시보드", "상품 수동 등록", "등록 상품 관리", "AI 자동 크롤링", "자동 가격 설정", "마켓 자동 등록", "API 연동 설정"], 
+        icons=['grid-fill', 'pencil-square', 'list-check', 'search', 'currency-dollar', 'cloud-arrow-up', 'gear'], 
+        default_index=1)
 
 # --- 공통 함수: 상세 정보 섹션 ---
 def display_selected_product(df, selection):
@@ -76,32 +79,22 @@ if selected == "대시보드":
 
 elif selected == "상품 수동 등록":
     st.subheader("📝 사촌(원재)님 전용 상품 입력창")
-    st.write("도매처에서 소싱한 상품 정보를 아래에 입력하세요.")
-    
     with st.form("manual_input_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            p_name = st.text_input("상품명 (도매처 이름 그대로)", placeholder="예: [도매] 캠핑용 접이식 의자")
-            p_cost = st.number_input("소싱 원가 (원)", min_value=0, value=10000, step=100)
+            p_name = st.text_input("상품명 (도매처 이름)")
+            p_cost = st.number_input("소싱 원가 (원)", min_value=0, value=10000)
         with col2:
-            p_img = st.text_input("이미지 URL", placeholder="https://...")
+            p_img = st.text_input("이미지 URL")
             p_cat = st.text_input("쿠팡 카테고리 코드", value="1001")
             
-        submitted = st.form_submit_button("➕ 상품 리스트에 추가")
-        
-        if submitted:
+        if st.form_submit_button("➕ 상품 리스트에 추가"):
             new_item = {
-                "원본상품명": p_name,
-                "원가": p_cost,
-                "이미지URL": p_img,
-                "카테고리": p_cat,
-                "상태": "수집완료",
-                "선택": False,
-                "링크": "",
-                "판매가": calculate_selling_price(p_cost) # 기본 공식 적용
+                "원본상품명": p_name, "원가": p_cost, "이미지URL": p_img, "카테고리": p_cat,
+                "상태": "수집완료", "선택": False, "판매가": calculate_selling_price(p_cost)
             }
             st.session_state['products'].append(new_item)
-            st.success(f"'{p_name}' 상품이 리스트에 추가되었습니다!")
+            st.success("대기열에 추가되었습니다.")
             st.rerun()
 
     if st.session_state['products']:
@@ -109,6 +102,26 @@ elif selected == "상품 수동 등록":
         st.write("### 📋 현재 입력된 상품 대기열")
         df = pd.DataFrame(st.session_state['products'])
         st.dataframe(df[["상태", "원본상품명", "원가", "카테고리"]], use_container_width=True)
+
+elif selected == "등록 상품 관리":
+    st.subheader("📋 쿠팡 마켓 등록 현황 및 삭제")
+    if st.button("🔄 쿠팡 실시간 목록 새로고침"):
+        with st.spinner("조회 중..."):
+            st.session_state['remote_prods'] = get_registered_products()
+    
+    if st.session_state.get('remote_prods'):
+        df_remote = pd.DataFrame(st.session_state['remote_prods'])
+        df_remote['선택'] = False
+        edited = st.data_editor(df_remote, use_container_width=True, hide_index=True)
+        
+        target = edited[edited['선택'] == True]
+        if not target.empty and st.button("🗑️ 선택 상품 판매 중지", type="primary"):
+            for pid in target['sellerProductId']:
+                stop_selling_product(pid)
+            st.success("중지 처리가 완료되었습니다.")
+            st.rerun()
+        else:
+            st.info("등록된 상품이 없습니다.")
 
 elif selected == "AI 자동 크롤링":
     st.subheader("🔍 네이버 상품 참고 수집")
@@ -162,15 +175,36 @@ elif selected == "자동 가격 설정":
 elif selected == "마켓 자동 등록":
     st.subheader("📦 쿠팡 마켓 실제 등록")
     if st.session_state['products']:
-        df = pd.DataFrame(st.session_state['products'])
-        edited_df = st.data_editor(df, use_container_width=True, hide_index=True)
-        st.session_state['products'] = edited_df.to_dict('records')
+        input_df = pd.DataFrame(st.session_state['products'])
+        if '선택' not in input_df.columns:
+            input_df['선택'] = False
+
+        edited_df = st.data_editor(
+            input_df,
+            column_config={
+                "선택": st.column_config.CheckboxColumn("선택", default=False),
+                "이미지URL": st.column_config.ImageColumn("이미지"),
+                "판매가": st.column_config.NumberColumn("판매가", format="₩%d"),
+                "상태": st.column_config.TextColumn("상태", disabled=True)
+            },
+            use_container_width=True,
+            hide_index=True,
+            key="market_reg_editor"
+        )
         
+        st.session_state['products'] = edited_df.to_dict('records')
         ready = [p for p in st.session_state['products'] if p.get('선택') == True]
+        
+        st.divider()
         if st.button("🚀 선택 상품 쿠팡 전송", type="primary", use_container_width=True):
-            results = bulk_register_to_coupang(ready)
-            st.success("전송 프로세스 완료")
-            st.rerun()
+            if not ready:
+                st.warning("등록할 상품을 먼저 선택해 주세요.")
+            else:
+                with st.spinner("쿠팡 서버에 전송 중..."):
+                    results = bulk_register_to_coupang(ready)
+                    st.success(f"{len(ready)}개 상품 처리 완료")
+                    st.balloons()
+                    st.rerun()
     else:
         st.warning("등록할 상품이 없습니다.")
 
