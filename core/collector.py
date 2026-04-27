@@ -5,16 +5,41 @@ import hashlib
 import requests
 import yaml
 import traceback
+import streamlit as st  # 스트림릿 클라우드 Secrets 사용을 위해 추가
 
 # [공식 예제 핵심] 시스템 타임존을 GMT로 설정하여 시간 오차 방지
 os.environ['TZ'] = 'GMT+0'
 
 def load_keys():
+    """
+    1순위: 스트림릿 클라우드 Secrets 확인 (배포 환경)
+    2순위: config.yaml 확인 (로컬 환경)
+    """
+    # 1. 스트림릿 클라우드 Secrets 확인
     try:
-        with open('config.yaml', 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        return {}
+        # Secrets에 naver_client_id가 등록되어 있는지 확인
+        if "naver_client_id" in st.secrets:
+            return {
+                'naver_client_id': st.secrets["naver_client_id"],
+                'naver_client_secret': st.secrets["naver_client_secret"],
+                'openai_api_key': st.secrets["openai_api_key"],
+                'coupang_access_key': st.secrets["coupang_access_key"],
+                'coupang_secret_key': st.secrets["coupang_secret_key"],
+                'coupang_vendor_id': st.secrets["coupang_vendor_id"]
+            }
+    except Exception:
+        # st.secrets 접근 실패 시(로컬 등) 통과
+        pass
+
+    # 2. 로컬 config.yaml 확인
+    try:
+        if os.path.exists('config.yaml'):
+            with open('config.yaml', 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+    except Exception:
+        traceback.print_exc()
+        
+    return {}
 
 def generate_coupang_headers(method, path, query_str=""):
     """쿠팡 공식 예제 로직을 구현한 헤더 생성 함수"""
@@ -46,7 +71,6 @@ def fetch_real_naver_products(keyword, display_count=10, start=1):
     start: 검색 시작 위치 (최대 1000)
     """
     keys = load_keys()
-    # start 파라미터를 추가하여 다음 페이지의 데이터를 가져옵니다.
     url = f"https://openapi.naver.com/v1/search/shop.json?query={keyword}&display={display_count}&start={start}"
     headers = {
         "X-Naver-Client-Id": keys.get('naver_client_id'),
@@ -64,7 +88,7 @@ def fetch_real_naver_products(keyword, display_count=10, start=1):
                 "판매가": 0,
                 "카테고리": item['category1'],
                 "이미지URL": item['image'],
-                "링크": item['link'] # 중복 체크의 기준
+                "링크": item['link'] 
             } for item in items]
     except Exception as e:
         print(f"🚨 네이버 수집 중 오류: {e}")
@@ -76,13 +100,14 @@ def fetch_coupang_products(max_results=10):
     print("🚀 [LOG] 쿠팡 상품 수집 시도 중...")
     try:
         keys = load_keys()
-        vendor_id = keys.get('coupang_vendor_id', '').strip()
+        vendor_id = str(keys.get('coupang_vendor_id', '')).strip()
         
+        if not vendor_id:
+            print("❌ [LOG] Vendor ID가 설정되지 않았습니다.")
+            return []
+
         # 1. 목록 조회
         list_path = "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products"
-        
-        # [공식 문서 참고] 기본은 APPROVED(승인완료)만 조회됨.
-        # 다른 상태(SAVED, APPROVING 등)도 보고 싶다면 status 파라미터를 추가하세요.
         list_query = f"vendorId={vendor_id}&maxPerPage={max_results}"
         
         headers = generate_coupang_headers("GET", list_path, list_query)
