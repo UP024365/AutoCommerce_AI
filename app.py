@@ -173,7 +173,7 @@ elif selected == "자동 가격 설정":
         st.dataframe(pd.DataFrame(st.session_state['products'])[["원본상품명", "원가", "판매가"]], use_container_width=True)
 
 elif selected == "마켓 자동 등록":
-    st.subheader("📦 쿠팡 마켓 실제 등록")
+    st.subheader("📦 쿠팡 마켓 실제 등록 전송")
     if st.session_state['products']:
         input_df = pd.DataFrame(st.session_state['products'])
         if '선택' not in input_df.columns:
@@ -196,15 +196,30 @@ elif selected == "마켓 자동 등록":
         ready = [p for p in st.session_state['products'] if p.get('선택') == True]
         
         st.divider()
-        if st.button("🚀 선택 상품 쿠팡 전송", type="primary", use_container_width=True):
+        if st.button("🚀 쿠팡으로 상품 생성 요청", type="primary", use_container_width=True):
             if not ready:
                 st.warning("등록할 상품을 먼저 선택해 주세요.")
             else:
+                log_container = st.container() # 로그를 띄울 컨테이너 생성
                 with st.spinner("쿠팡 서버에 전송 중..."):
                     results = bulk_register_to_coupang(ready)
-                    st.success(f"{len(ready)}개 상품 처리 완료")
-                    st.balloons()
-                    st.rerun()
+                    
+                    # --- 에러 로그 출력 부분 추가 ---
+                    with log_container:
+                        st.write("### 📋 처리 결과 상세 로그")
+                        for idx, res in enumerate(results):
+                            p_name = ready[idx].get('원본상품명', '알 수 없는 상품')
+                            if res.get('returnCode') == "SUCCESS":
+                                st.success(f"✅ [성공] {p_name} (ID: {res.get('data')})")
+                            else:
+                                # 쿠팡 API가 보내주는 실제 에러 메시지를 빨간색 박스로 표시
+                                error_msg = res.get('returnMessage', '상세 사유 없음')
+                                st.error(f"❌ [실패] {p_name}")
+                                st.code(f"에러 내용: {error_msg}") # 상세 에러 로그 출력
+                                
+                        if any(r.get('returnCode') == "SUCCESS" for r in results):
+                            st.balloons()
+                    # ------------------------------
     else:
         st.warning("등록할 상품이 없습니다.")
 
