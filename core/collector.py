@@ -6,50 +6,48 @@ import requests
 import yaml
 import traceback
 
-# [공식 예제 핵심] 시스템 타임존을 GMT로 강제 설정하여 시간 오차 방지
+# [공식 예제 핵심] 시스템 타임존을 GMT로 설정하여 시간 오차 방지
 os.environ['TZ'] = 'GMT+0'
 
 def load_keys():
-    """config.yaml에서 API 키 로드"""
     try:
         with open('config.yaml', 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print("❌ [Error] config.yaml 파일을 찾을 수 없습니다.")
         return {}
 
 def generate_coupang_headers(method, path, query_str=""):
-    """쿠팡 공식 예제 로직을 그대로 구현한 헤더 생성 함수"""
+    """쿠팡 공식 예제 로직을 구현한 헤더 생성 함수"""
     keys = load_keys()
     access_key = keys.get('coupang_access_key', '').strip()
     secret_key = keys.get('coupang_secret_key', '').strip()
     
-    # [공식 예제 방식] GMT 기준 타임스탬프 생성
-    # 예제: datetime=time.strftime('%y%m%d')+'T'+time.strftime('%H%M%S')+'Z'
+    # GMT 기준 타임스탬프 생성
     timestamp = time.strftime('%y%m%dT%H%M%SZ', time.gmtime())
     
-    # [공식 예제 방식] Message 구성 (Timestamp + Method + Path + Query)
-    # 쿼리스트링에서 물음표(?)는 제외하고 파라미터만 합칩니다.
+    # [공식 예제 방식] 서명 메시지 구성 시 경로와 쿼리 사이 '?' 제외
     clean_query = query_str.replace('?', '').strip()
     message = timestamp + method + path + clean_query
     
-    # HMAC SHA256 서명 생성
     signature = hmac.new(
         secret_key.encode('utf-8'),
         message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
     
-    # 공식 예제와 동일한 Authorization 헤더 형식
     return {
         "Content-type": "application/json;charset=UTF-8",
         "Authorization": f"CEA algorithm=HmacSHA256, access-key={access_key}, signed-date={timestamp}, signature={signature}"
     }
 
-def fetch_real_naver_products(keyword, display_count=10):
-    """네이버 쇼핑 검색 (기존 로직 유지)"""
+def fetch_real_naver_products(keyword, display_count=10, start=1):
+    """
+    네이버 쇼핑 검색 (중복 방지를 위해 start 파라미터 추가)
+    start: 검색 시작 위치 (최대 1000)
+    """
     keys = load_keys()
-    url = f"https://openapi.naver.com/v1/search/shop.json?query={keyword}&display={display_count}"
+    # start 파라미터를 추가하여 다음 페이지의 데이터를 가져옵니다.
+    url = f"https://openapi.naver.com/v1/search/shop.json?query={keyword}&display={display_count}&start={start}"
     headers = {
         "X-Naver-Client-Id": keys.get('naver_client_id'),
         "X-Naver-Client-Secret": keys.get('naver_client_secret')
@@ -66,14 +64,14 @@ def fetch_real_naver_products(keyword, display_count=10):
                 "판매가": 0,
                 "카테고리": item['category1'],
                 "이미지URL": item['image'],
-                "링크": item['link']
+                "링크": item['link'] # 중복 체크의 기준
             } for item in items]
     except Exception as e:
         print(f"🚨 네이버 수집 중 오류: {e}")
     return []
 
 def fetch_coupang_products(max_results=10):
-    """쿠팡 내 상품 수집 (공식 인증 방식 적용)"""
+    """쿠팡 내 상품 수집 (공식 문서 기반 필터링 적용)"""
     print("\n" + "="*50)
     print("🚀 [LOG] 쿠팡 상품 수집 시도 중...")
     try:
@@ -82,6 +80,9 @@ def fetch_coupang_products(max_results=10):
         
         # 1. 목록 조회
         list_path = "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products"
+        
+        # [공식 문서 참고] 기본은 APPROVED(승인완료)만 조회됨.
+        # 다른 상태(SAVED, APPROVING 등)도 보고 싶다면 status 파라미터를 추가하세요.
         list_query = f"vendorId={vendor_id}&maxPerPage={max_results}"
         
         headers = generate_coupang_headers("GET", list_path, list_query)
@@ -95,6 +96,11 @@ def fetch_coupang_products(max_results=10):
             return []
 
         summary_data = response.json().get('data', [])
+        
+        if not summary_data:
+            print("⚠️ [LOG] 등록된 상품이 없습니다. (현재 상태에서 data: [] 반환됨)")
+            return []
+
         detailed_products = []
 
         # 2. 상세 조회 루프
@@ -111,6 +117,7 @@ def fetch_coupang_products(max_results=10):
                 items = d.get('items', [])
                 first_item = items[0] if items else {}
                 
+                # 이미지 추출 (REPRESENTATION 우선)
                 images = first_item.get('images', [])
                 rep_image = next((img.get('vendorPath') or img.get('cdnPath') 
                                  for img in images if img.get('imageType') == 'REPRESENTATION'), "")
