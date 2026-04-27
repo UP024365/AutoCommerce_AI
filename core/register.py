@@ -12,36 +12,34 @@ def register_product_to_coupang(product):
     
     # 2. API 키 및 Vendor ID 로드
     keys = load_keys()
-    vendor_id = keys.get('coupang_vendor_id')
+    vendor_id = str(keys.get('coupang_vendor_id', '')).strip()
     
     if not vendor_id:
-        return {"returnCode": "ERROR", "returnMessage": "Vendor ID가 없습니다."}
+        return {"returnCode": "ERROR", "returnMessage": "Vendor ID가 설정되지 않았습니다."}
 
     # 3. 쿠팡 요구 양식(JSON Payload) 구성
-    # *주의: 실제 등록을 위해서는 카테고리ID, 이미지, 출고지 등 상세 정보가 더 필요하지만
-    # 우선 가장 핵심적인 구조부터 잡습니다.
+    # 필수 필드: 상품명, 카테고리, 이미지, 배송정보 등
     payload = {
-        "displayProductName": product.get('AI최적화명'),
+        "displayProductName": product.get('AI최적화명') or product.get('원본상품명'),
         "sellerProductName": product.get('원본상품명'),
         "vendorId": vendor_id,
-        "salePrice": product.get('판매가'),
-        "displayCategoryCode": product.get('카테고리번호', 1001), # 예시: 일반 카테고리
-        "deliveryMethod": "OTHERS", # 일반 택배 배송
-        "deliveryCompanyCode": "CJGLS", # CJ대한통운 예시
-        "deliveryChargeType": "FREE", # 무료배송 예시
-        "outboundShippingPlaceCode": 1, # 등록된 출고지 번호
+        "salePrice": product.get('판매가', product.get('원가', 0)),
+        "displayCategoryCode": 1001,  # 임시: 실제 상품에 맞는 카테고리 번호로 교체 필요
+        "deliveryMethod": "OTHERS", 
+        "deliveryCompanyCode": "CJGLS",
+        "deliveryChargeType": "FREE",
+        "outboundShippingPlaceCode": 1, # 쿠팡 판매자 센터에 등록된 출고지 번호
         "maximumBuyCount": 99,
         "items": [
             {
-                "itemName": "단일옵션",
-                "originalPrice": product.get('판매가'), # 원가 아님, 정가 개념
-                "salePrice": product.get('판매가'),
+                "itemName": "단일상품",
+                "originalPrice": product.get('판매가', product.get('원가', 0)),
+                "salePrice": product.get('판매가', product.get('원가', 0)),
                 "maximumBuyCount": 99,
                 "images": [
                     {
                         "imageOrder": 0,
-                        "imageType": "REPRESENTATIVE", # 대표 이미지
-                        "cdnPath": product.get('이미지URL', "http://example.com/image.jpg"),
+                        "imageType": "REPRESENTATIVE",
                         "vendorPath": product.get('이미지URL')
                     }
                 ],
@@ -56,27 +54,26 @@ def register_product_to_coupang(product):
                 "contents": [
                     {
                         "contentsType": "HTML",
-                        "content": f"<div>{product.get('AI최적화명')} 상세설명</div>"
+                        "content": f"<div><img src='{product.get('이미지URL')}'></div>"
                     }
                 ]
             }
         ]
     }
 
-    # 4. 헤더 생성 (POST 메서드용)
-    headers = generate_coupang_headers("POST", path)
+    # 4. 헤더 생성 (POST 메서드, 쿼리 스트링 없음)
+    headers = generate_coupang_headers("POST", path, "")
     
     # 5. 실제 API 요청 전송
     url = f"https://api-gateway.coupang.com{path}"
     
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=10)
         result = response.json()
         
-        # 성공 시 등록 정보 업데이트
-        if result.get('returnCode') == "SUCCESS":
+        if response.status_code == 200 and result.get('returnCode') == "SUCCESS":
             product['상태'] = "등록완료"
-            product['등록ID'] = result.get('data') # 쿠팡 상품 번호
+            product['등록ID'] = result.get('data') 
         else:
             product['상태'] = "등록실패"
             
@@ -87,12 +84,13 @@ def register_product_to_coupang(product):
 
 def bulk_register_to_coupang(product_list):
     """
-    여러 상품을 순차적으로 등록하는 함수
+    여러 상품을 순차적으로 등록
     """
     results = []
     for product in product_list:
-        if product.get('상태') == "가공완료":
+        # 가공완료 혹은 수집완료 상태인 상품만 등록 진행
+        if product.get('상태') in ["가공완료", "수집완료", "승인완료"]:
             res = register_product_to_coupang(product)
             results.append(res)
-            time.sleep(0.1) # 쿠팡 API 초당 호출 제한(TPS) 준수
+            time.sleep(0.5) # 쿠팡 API 속도 제한 준수
     return results
