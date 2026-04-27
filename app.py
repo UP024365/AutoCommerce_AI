@@ -6,7 +6,7 @@ import os
 import yaml
 
 # core 폴더의 함수들 불러오기
-from core.collector import fetch_real_naver_products 
+from core.collector import fetch_real_naver_products, fetch_coupang_products 
 from core.processor import refine_products_batch, register_to_market
 
 # 1. 페이지 설정
@@ -57,7 +57,11 @@ def display_selected_product(df, selection):
         col_img, col_info = st.columns([1, 2])
         
         with col_img:
-            st.image(p["이미지URL"], use_container_width=True)
+            if p["이미지URL"]:
+                # 경고 해결: width="stretch" 사용
+                st.image(p["이미지URL"], width="stretch") 
+            else:
+                st.info("이미지 없음")
             
         with col_info:
             st.write(f"#### {p['원본상품명']}")
@@ -70,7 +74,7 @@ def display_selected_product(df, selection):
                 st.write(f"**📂 카테고리:** {p['카테고리']}")
             with c2:
                 st.write(f"**🏷️ 상태:** {p['상태']}")
-                st.link_button("🔗 원본 상품 페이지", p["링크"])
+                st.link_button("🔗 상품 페이지 이동", p["링크"])
 
 # --- 화면별 로직 ---
 
@@ -87,7 +91,6 @@ if selected == "대시보드":
     
     if total_count > 0:
         df = pd.DataFrame(st.session_state['products'])
-        # 표 출력 및 선택 감지
         event = st.dataframe(
             df[["이미지URL", "상태", "원본상품명", "AI최적화명", "원가"]],
             column_config={
@@ -99,25 +102,45 @@ if selected == "대시보드":
             on_select="rerun",
             selection_mode="single-row"
         )
-        # 상세 정보 표시
         display_selected_product(df, event.get("selection"))
     else:
         st.info("데이터가 없습니다. 'AI 자동 크롤링' 메뉴에서 상품을 수집하세요.")
 
 elif selected == "AI 자동 크롤링":
-    st.subheader("🔍 실시간 네이버 상품 수집")
+    st.subheader("🔍 실시간 상품 수집")
     
-    col_in, col_bt = st.columns([3, 1])
+    col_in, col_bt_naver, col_bt_coupang = st.columns([2, 1, 1])
     with col_in:
-        keyword = st.text_input("수집 키워드 입력", "캠핑용품")
-    with col_bt:
+        keyword = st.text_input("수집 키워드 입력 (네이버 검색용)", "캠핑용품")
+    
+    with col_bt_naver:
         st.write(" ") 
-        if st.button("실시간 수집", use_container_width=True):
-            with st.spinner("네이버 API에서 실시간 데이터 불러오는 중..."):
+        if st.button("네이버 실시간 검색", use_container_width=True):
+            with st.spinner("네이버 API에서 데이터 불러오는 중..."):
                 new_data = fetch_real_naver_products(keyword, 10)
                 if new_data:
                     st.session_state['products'] = new_data
+                    st.success(f"네이버 상품 {len(new_data)}개를 불러왔습니다.")
                     st.rerun()
+                else:
+                    st.error("네이버에서 검색 결과가 없습니다.")
+
+    with col_bt_coupang:
+        st.write(" ")
+        if st.button("쿠팡 내 상품 수집", width="stretch", type="secondary"):
+            with st.spinner("쿠팡 WING에서 데이터를 가져오는 중..."):
+                # 실제 수집 함수 호출
+                new_data = fetch_coupang_products(10)
+                
+                if new_data:
+                    st.session_state['products'] = new_data
+                    st.toast(f"✅ {len(new_data)}개의 상품을 불러왔습니다.")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    # 실패 시 메시지 강화
+                    st.error("쿠팡 데이터를 가져오지 못했습니다.")
+                    st.warning("터미널(VS Code 로그)에 뜬 [LOG] 응답 코드를 확인해 주세요.")
 
     if st.session_state['products']:
         st.divider()
@@ -131,7 +154,7 @@ elif selected == "AI 자동 크롤링":
             df,
             column_config={
                 "이미지URL": st.column_config.ImageColumn("상품이미지"),
-                "링크": st.column_config.LinkColumn("네이버링크"),
+                "링크": st.column_config.LinkColumn("링크"),
                 "원가": st.column_config.NumberColumn("원가", format="₩%d"),
             },
             use_container_width=True,
@@ -146,7 +169,7 @@ elif selected == "마켓 자동 등록":
     st.info("💡 현재 시뮬레이션 모드입니다. 상품을 클릭하여 전송 상세 내용을 확인하세요.")
     
     if st.session_state['products']:
-        ready_to_reg = [p for p in st.session_state['products'] if p.get('상태') == "가공완료"]
+        ready_to_reg = [p for p in st.session_state['products'] if p.get('상태') in ["가공완료", "수집완료", "쿠팡수집", "승인완료"]]
         
         col1, col2 = st.columns(2)
         with col1:
@@ -154,14 +177,16 @@ elif selected == "마켓 자동 등록":
         with col2:
             if st.button("🚀 마켓 일괄 등록 시뮬레이션", type="primary"):
                 if not ready_to_reg:
-                    st.warning("먼저 AI 가공을 완료해 주세요.")
+                    st.warning("등록 가능한 대기 상품이 없습니다.")
                 else:
                     progress_bar = st.progress(0)
                     for i, p in enumerate(st.session_state['products']):
-                        if p.get('상태') == "가공완료":
-                            time.sleep(0.3) 
-                            p['상태'] = "등록완료"
+                        time.sleep(0.3) 
+                        p['상태'] = "등록완료"
+                        if p.get('원가', 0) > 0:
                             p['판매가'] = int(p['원가'] * 1.2)
+                        else:
+                            p['판매가'] = 10000 
                         progress_bar.progress((i + 1) / len(st.session_state['products']))
                     st.balloons()
                     st.rerun()
@@ -179,14 +204,18 @@ elif selected == "마켓 자동 등록":
     else:
         st.warning("수집된 상품이 없습니다.")
 
-# 나머지 메뉴 생략 (이전과 동일)
 elif selected == "API 연동 설정":
     st.subheader("⚙️ API 인증 관리")
     if os.path.exists('config.yaml'):
         with open('config.yaml', 'r', encoding='utf-8') as f:
             conf = yaml.safe_load(f)
-            st.success(f"✅ 네이버 API: 연동됨")
+            st.success(f"✅ 네이버 API: 연동됨 (ID: {conf.get('naver_client_id')})")
             st.success(f"✅ OpenAI API: 연동됨")
-    else: st.error("config.yaml 미설정")
+            if 'coupang_access_key' in conf:
+                st.success(f"✅ 쿠팡 API: 연동됨 (업체코드: {conf.get('coupang_vendor_id')})")
+            else:
+                st.warning("⚠️ 쿠팡 API 키 정보가 config.yaml에 없습니다.")
+    else: 
+        st.error("config.yaml 파일이 존재하지 않습니다.")
 else:
     st.info(f"{selected} 기능은 준비 중입니다.")
